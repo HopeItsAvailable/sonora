@@ -244,7 +244,7 @@ impl TitleBar {
 
                 MenuItem::new(SharedString::from(format!("account-{slug}")), info.name)
                     .icon(crate::shared::provider_logo(slug))
-                    .selected(info.active)
+                    .selected(info.active && !info.guest)
                     .on_click(move |_, _, cx| {
                         session.update(cx, |session, cx| session.switch(slug, cx));
                     })
