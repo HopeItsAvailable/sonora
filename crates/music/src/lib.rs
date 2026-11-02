@@ -1005,6 +1005,8 @@ pub trait MusicProvider: Send + Sync {
     fn stored_guest(&self) -> bool {
         false
     }
+    /// Leaves a stored anonymous session behind while keeping any stored account intact.
+    fn leave_guest(&self) {}
     fn location(&self) -> Option<String> {
         None
     }

@@ -54,7 +54,6 @@ pub(super) struct Account {
 #[derive(Clone, Copy)]
 pub(super) struct Guest {
     slug: &'static str,
-    stored: bool,
     active: bool,
 }
 
@@ -317,7 +316,7 @@ impl SettingsView {
                 name: info.name,
                 options: info.options,
                 web_sign_in: info.web_sign_in,
-                stored: info.stored && !info.guest,
+                stored: info.stored,
                 // a session on its way up reports no account yet, so while it loads the card
                 // it belongs to keeps the radio rather than leaving the list blank
                 active: match chosen {
@@ -349,7 +348,6 @@ impl SettingsView {
         };
         Some(Guest {
             slug: info.slug,
-            stored: info.guest,
             active,
         })
     }
@@ -457,24 +455,15 @@ impl SettingsView {
         place: (usize, usize),
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Guest {
-            slug,
-            stored,
-            active,
-        } = guest;
+        let Guest { slug, active } = guest;
         let status = active.then(|| t!("settings-provider-current"));
         let leave = active.then(|| self.sign_out_button(GUEST, slug, pending, cx));
         let press: Option<Press> = (!active).then(|| -> Press {
             Box::new(cx.listener(move |this, _, _, cx| {
                 this.chosen = Some(GUEST);
-                match stored {
-                    true => this
-                        .session
-                        .update(cx, |session, cx| session.switch(slug, cx)),
-                    false => this.session.update(cx, |session, cx| {
-                        session.sign_in(slug, SignIn::Anonymous, cx)
-                    }),
-                }
+                this.session.update(cx, |session, cx| {
+                    session.sign_in(slug, SignIn::Anonymous, cx)
+                });
             }))
         });
 
@@ -524,8 +513,10 @@ impl SettingsView {
             .disabled(pending)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.chosen = None;
-                this.session
-                    .update(cx, |session, cx| session.forget(slug, cx));
+                this.session.update(cx, |session, cx| match id == GUEST {
+                    true => session.forget_guest(slug, cx),
+                    false => session.forget(slug, cx),
+                });
             }))
             .into_any_element()
     }

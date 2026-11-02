@@ -49,6 +49,8 @@ enum Saved {
         authuser: usize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         page_id: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        guest: bool,
     },
     Guest,
 }
@@ -214,6 +216,7 @@ impl YouTubeProvider {
             cookies: cookies.to_owned(),
             authuser,
             page_id,
+            guest: false,
         })
         .context("cannot store youtube cookies")
     }
@@ -260,11 +263,26 @@ impl YouTubeProvider {
     }
 
     /// Records that the user chose to listen as a guest, so the next launch restores that
-    /// instead of asking again. The rotating cookie store goes with it, since a guest client
-    /// never reads one.
+    /// instead of asking again, while keeping any stored account cookies intact.
     fn store_guest(&self) {
-        credentials::remove(&self.cookies);
-        if let Err(error) = self.save(&Saved::Guest) {
+        let saved = match self.saved() {
+            Some(Saved::Cookies {
+                cookies,
+                authuser,
+                page_id,
+                ..
+            }) => Saved::Cookies {
+                cookies,
+                authuser,
+                page_id,
+                guest: true,
+            },
+            Some(Saved::Guest) | None => {
+                credentials::remove(&self.cookies);
+                Saved::Guest
+            }
+        };
+        if let Err(error) = self.save(&saved) {
             log::warn!("youtube: cannot remember the guest session: {error:#}");
         }
     }
@@ -346,11 +364,39 @@ impl MusicProvider for YouTubeProvider {
     }
 
     fn stored(&self) -> bool {
-        self.credentials.exists()
+        matches!(self.saved(), Some(Saved::Cookies { .. }))
     }
 
     fn stored_guest(&self) -> bool {
-        matches!(self.saved(), Some(Saved::Guest))
+        matches!(
+            self.saved(),
+            Some(Saved::Guest | Saved::Cookies { guest: true, .. })
+        )
+    }
+
+    fn leave_guest(&self) {
+        match self.saved() {
+            Some(Saved::Cookies {
+                cookies,
+                authuser,
+                page_id,
+                guest: true,
+            }) => {
+                if let Err(error) = self.save(&Saved::Cookies {
+                    cookies,
+                    authuser,
+                    page_id,
+                    guest: false,
+                }) {
+                    log::warn!("youtube: cannot leave the guest session: {error:#}");
+                }
+            }
+            Some(Saved::Guest) => {
+                credentials::remove(&self.credentials);
+                credentials::remove(&self.cookies);
+            }
+            Some(Saved::Cookies { guest: false, .. }) | None => {}
+        }
     }
 
     fn offline_playback(&self) -> Option<Arc<dyn PlaybackFactory>> {
@@ -359,8 +405,9 @@ impl MusicProvider for YouTubeProvider {
                 cookies,
                 authuser,
                 page_id,
+                guest: false,
             } => self.cookie_client(&cookies, authuser, page_id.as_deref()),
-            Saved::Guest => self.guest_client(),
+            Saved::Guest | Saved::Cookies { guest: true, .. } => self.guest_client(),
         };
         Some(Arc::new(Factory::new(api)))
     }
@@ -371,11 +418,12 @@ impl MusicProvider for YouTubeProvider {
                 cookies,
                 authuser,
                 page_id,
+                guest: false,
             }) => {
                 self.restore_cookies(&cookies, authuser, page_id.as_deref())
                     .await
             }
-            Some(Saved::Guest) => {
+            Some(Saved::Guest | Saved::Cookies { guest: true, .. }) => {
                 log::debug!("youtube: restoring guest session");
                 Ok(Some(self.guest_session(self.guest_client())))
             }
@@ -409,8 +457,15 @@ impl MusicProvider for YouTubeProvider {
     }
 
     fn sign_out(&self) {
-        credentials::remove(&self.credentials);
         credentials::remove(&self.cookies);
+        match self.saved() {
+            Some(Saved::Cookies { guest: true, .. }) => {
+                if let Err(error) = self.save(&Saved::Guest) {
+                    log::warn!("youtube: cannot remember the guest session: {error:#}");
+                }
+            }
+            _ => credentials::remove(&self.credentials),
+        }
     }
 
     fn web_sign_in(&self) -> Option<WebSignIn> {
