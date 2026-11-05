@@ -19,6 +19,9 @@ use crate::{Io, Network, Outcome, Scan, Shelf, Target, Toast, Toasts, join};
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// How often the sign-in window is asked whether the user is through.
 const WINDOW_POLL: Duration = Duration::from_millis(300);
+/// The settings key a guest session's sidebar pins are filed under, kept apart from the
+/// provider's own account pins.
+const GUEST_PIN_SLUG: &str = "guest";
 const BACKOFF: [Duration; 5] = [
     Duration::ZERO,
     Duration::from_secs(5),
@@ -311,11 +314,35 @@ impl Session {
         else {
             return;
         };
-        if self.active == Some(index) {
+        if self.active == Some(index) && !self.guest() && !self.providers[index].stored_guest() {
             return self.sign_out(cx);
         }
         self.providers[index].sign_out();
         cx.notify();
+    }
+
+    /// Signs out of `slug`'s anonymous session without touching its stored account, and falls
+    /// back to the next provider with an account stored.
+    pub fn forget_guest(&mut self, slug: &str, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .providers
+            .iter()
+            .position(|provider| provider.slug() == slug)
+        else {
+            return;
+        };
+        let active_guest =
+            self.active == Some(index) && (self.guest() || self.providers[index].stored_guest());
+        self.providers[index].leave_guest();
+        if !active_guest {
+            cx.notify();
+            return;
+        }
+        self.release(cx);
+        if let Some(index) = self.remaining() {
+            self.active = Some(index);
+            self.restore(cx);
+        }
     }
 
     pub fn switch(&mut self, slug: &str, cx: &mut Context<Self>) {
@@ -329,8 +356,15 @@ impl Session {
         else {
             return;
         };
-        if self.active == Some(index) && matches!(self.state, SessionState::SignedIn(_)) {
+        if self.active == Some(index)
+            && !self.guest()
+            && !self.providers[index].stored_guest()
+            && matches!(self.state, SessionState::SignedIn(_))
+        {
             return;
+        }
+        for provider in &self.providers {
+            provider.leave_guest();
         }
         self.release(cx);
         self.active = Some(index);
@@ -373,15 +407,32 @@ impl Session {
         self.local_provider.slug()
     }
 
+    /// The key a streaming session's pins are filed under, which keeps a guest session's pins
+    /// apart from the account's on the same provider.
+    fn pin_slug(&self) -> Option<&'static str> {
+        match self.guest() {
+            true => Some(GUEST_PIN_SLUG),
+            false => self.provider_slug(),
+        }
+    }
+
     pub fn active_slugs(&self) -> Vec<&'static str> {
         let mut slugs = Vec::new();
         if self.client.is_some() {
-            slugs.extend(self.provider_slug());
+            slugs.extend(self.pin_slug());
         }
         if self.local_client.is_some() {
             slugs.push(self.local_slug());
         }
         slugs
+    }
+
+    /// The key `id`'s pin is filed under, whichever shelf it sits on.
+    pub fn pin_slug_for(&self, id: &str) -> Option<&'static str> {
+        match music::is_local_id(id) {
+            true => Some(self.local_slug()),
+            false => self.pin_slug(),
+        }
     }
 
     pub fn slug_for(&self, id: &str) -> Option<&'static str> {
@@ -447,7 +498,7 @@ impl Session {
     fn restore_at(&mut self, index: usize, cx: &mut Context<Self>) {
         self.active = Some(index);
         // In offline mode the account is not reached at all. Going online tries it again.
-        if self.settings.read(cx).offline_mode() && self.providers[index].stored() {
+        if self.settings.read(cx).offline_mode() && self.stored_active() {
             log::info!("session: offline mode is on, carrying on offline");
             return self.carry_on_offline(offline_mode(), cx);
         }
@@ -750,11 +801,13 @@ impl Session {
         }
     }
 
-    /// Whether the active provider has an account stored, which is what tells a failed restore
+    /// Whether the active provider has a session stored, which is what tells a failed restore
     /// from a user who signed out.
     fn stored_active(&self) -> bool {
-        self.active
-            .is_some_and(|index| self.providers[index].stored())
+        self.active.is_some_and(|index| {
+            let provider = &self.providers[index];
+            provider.stored() || provider.stored_guest()
+        })
     }
 
     /// Lets go of the live account when offline mode turns on, leaving the session where a launch
@@ -827,6 +880,11 @@ impl Session {
             .is_some_and(|(held, profile)| held != index || profile.id != session.profile.id);
         if replaced {
             self.drop_previous_session(cx);
+        }
+        if session.authenticated {
+            for provider in &self.providers {
+                provider.leave_guest();
+            }
         }
         self.active = Some(index);
         self.awaiting = None;
