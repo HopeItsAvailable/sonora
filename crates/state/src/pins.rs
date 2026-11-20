@@ -88,7 +88,7 @@ impl Pins {
         cx.subscribe(&library, |this, _, event, cx| match event {
             LibraryEvent::PlaylistGone(id) => {
                 let pin = Pin::new(PinKind::Playlist, id, "");
-                if let Some(slug) = this.session.read(cx).slug_for(id) {
+                if let Some(slug) = this.session.read(cx).pin_slug_for(id) {
                     if let Some(parted) = this.part(slug, &pin, cx) {
                         this.parted.insert(id.clone(), parted);
                     }
@@ -282,7 +282,7 @@ impl Pins {
     /// Pins at `gap`, a slot counted among the pins already shown, or moves an existing pin there.
     /// `None` appends, and never moves a pin that is already in the list.
     pub fn place(&mut self, pin: Pin, gap: Option<usize>, cx: &mut Context<Self>) {
-        let Some(slug) = self.session.read(cx).slug_for(&pin.id) else {
+        let Some(slug) = self.session.read(cx).pin_slug_for(&pin.id) else {
             return;
         };
         let known = self.holds(&pin, cx);
@@ -303,7 +303,7 @@ impl Pins {
 
     /// Unpins and reports it in a toast whose Undo pins it back into the same slot.
     pub fn unpin(&mut self, pin: Pin, cx: &mut Context<Self>) {
-        let Some(slug) = self.session.read(cx).slug_for(&pin.id) else {
+        let Some(slug) = self.session.read(cx).pin_slug_for(&pin.id) else {
             return;
         };
         let parted = self.part(slug, &pin, cx);
@@ -347,7 +347,7 @@ impl Pins {
         }
         let session = self.session.read(cx);
         let slugs = session.active_slugs();
-        if session.slug_for(&pin.id) != Some(slug) || !slugs.contains(&slug) {
+        if session.pin_slug_for(&pin.id) != Some(slug) || !slugs.contains(&slug) {
             return;
         }
         self.settings.update(cx, |settings, cx| {
@@ -398,7 +398,7 @@ impl Pins {
     /// Puts the local list back after the provider refused the change, and takes down the
     /// toast that reported an unpin the provider turned away.
     fn revert(&mut self, pin: Pin, attempted: bool, cx: &mut Context<Self>) {
-        let Some(slug) = self.session.read(cx).slug_for(&pin.id) else {
+        let Some(slug) = self.session.read(cx).pin_slug_for(&pin.id) else {
             return;
         };
         if !attempted && let Some((toast, unpinned)) = self.unpinned.take() {
@@ -467,13 +467,13 @@ impl Pins {
         let arrived: Vec<_> = now
             .iter()
             .filter(|(uri, pin)| !self.mirrored.contains_key(uri) && !known(pin))
-            .filter_map(|(uri, pin)| Some((session.slug_for(uri)?, pin.clone())))
+            .filter_map(|(uri, pin)| Some((session.pin_slug_for(uri)?, pin.clone())))
             .collect();
         let left: Vec<_> = self
             .mirrored
             .iter()
             .filter(|(uri, pin)| !now.iter().any(|(held, _)| held == *uri) && known(pin))
-            .filter_map(|(uri, pin)| Some((session.slug_for(uri)?, pin.clone())))
+            .filter_map(|(uri, pin)| Some((session.pin_slug_for(uri)?, pin.clone())))
             .collect();
         self.mirrored = now.into_iter().collect();
         if arrived.is_empty() && left.is_empty() {
